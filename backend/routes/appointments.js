@@ -305,6 +305,22 @@ router.patch("/:id", auth, async (req, res) => {
   try {
     const { date, reason } = req.body;
 
+    // Validar formato de fecha si se proporciona
+    if (date) {
+      const appointmentDate = new Date(date);
+      if (isNaN(appointmentDate.getTime())) {
+        return res.status(400).json({
+          error: "Formato de fecha inválido",
+        });
+      }
+
+      if (appointmentDate < new Date()) {
+        return res.status(400).json({
+          error: "La fecha de la cita debe ser futura",
+        });
+      }
+    }
+
     const appt = await pool.query(
       `SELECT a.*, p.user_id
        FROM appointments a
@@ -318,17 +334,19 @@ router.patch("/:id", auth, async (req, res) => {
 
     const cita = appt.rows[0];
 
-
     if (req.user.role !== "admin") {
       if (cita.user_id !== req.user.id)
         return res.status(403).json({ error: "No puedes modificar esta cita" });
 
+      // Guardar los cambios solicitados y cambiar el estado
       const solicitud = await pool.query(
         `UPDATE appointments
-         SET status = 'pending_change'
-         WHERE id = $1
+         SET status = 'pending_change',
+             requested_date = COALESCE($1, requested_date),
+             requested_reason = COALESCE($2, requested_reason)
+         WHERE id = $3
          RETURNING *`,
-        [req.params.id]
+        [date, reason, req.params.id]
       );
 
       return res.json({
@@ -337,7 +355,7 @@ router.patch("/:id", auth, async (req, res) => {
       });
     }
 
-    // Admin
+    // Admin puede actualizar directamente
     const result = await pool.query(
       `UPDATE appointments
        SET date = COALESCE($1, date),
@@ -518,14 +536,37 @@ router.patch("/:id/approve", auth, isAdmin, async (req, res) => {
     if (appt.rows.length === 0)
       return res.status(404).json({ error: "Cita no encontrada" });
 
+    // Usar los cambios solicitados o los proporcionados por el admin
+    const appointment = appt.rows[0];
+    const newDate = date || appointment.requested_date;
+    const newReason = reason || appointment.requested_reason;
+
+    // Validar formato de fecha si se proporciona
+    if (newDate) {
+      const appointmentDate = new Date(newDate);
+      if (isNaN(appointmentDate.getTime())) {
+        return res.status(400).json({
+          error: "Formato de fecha inválido",
+        });
+      }
+
+      if (appointmentDate < new Date()) {
+        return res.status(400).json({
+          error: "La fecha de la cita debe ser futura",
+        });
+      }
+    }
+
     const result = await pool.query(
       `UPDATE appointments
        SET date = COALESCE($1, date),
            reason = COALESCE($2, reason),
-           status = 'scheduled'
+           status = 'scheduled',
+           requested_date = NULL,
+           requested_reason = NULL
        WHERE id = $3
        RETURNING *`,
-      [date, reason, req.params.id]
+      [newDate, newReason, req.params.id]
     );
 
     res.json({
@@ -573,9 +614,12 @@ router.patch("/:id/reject", auth, isAdmin, async (req, res) => {
     if (appt.rows.length === 0)
       return res.status(404).json({ error: "Cita no encontrada" });
 
+    // Rechazar cambios solicitados y restaurar el estado
     const result = await pool.query(
       `UPDATE appointments
-       SET status = 'scheduled'
+       SET status = 'scheduled',
+           requested_date = NULL,
+           requested_reason = NULL
        WHERE id = $1
        RETURNING *`,
       [req.params.id]
