@@ -11,6 +11,24 @@ const pool = require("../db");
 const auth = require("../middleware/authMiddleware");
 const isAdmin = require("../middleware/isAdmin");
 
+// Helper function to validate date
+function validateDate(date) {
+  if (!date) {
+    return null; // No date provided, validation passes
+  }
+
+  const appointmentDate = new Date(date);
+  if (isNaN(appointmentDate.getTime())) {
+    return { error: "Formato de fecha inválido" };
+  }
+
+  if (appointmentDate < new Date()) {
+    return { error: "La fecha de la cita debe ser futura" };
+  }
+
+  return null; // Validation passes
+}
+
 /**
  * @swagger
  * /api/appointments:
@@ -80,18 +98,10 @@ router.post("/", auth, async (req, res) => {
       });
     }
 
-    // Validar que la fecha sea futura
-    const appointmentDate = new Date(date);
-    if (isNaN(appointmentDate.getTime())) {
-      return res.status(400).json({
-        error: "Formato de fecha inválido",
-      });
-    }
-
-    if (appointmentDate < new Date()) {
-      return res.status(400).json({
-        error: "La fecha de la cita debe ser futura",
-      });
+    // Validar fecha
+    const dateError = validateDate(date);
+    if (dateError) {
+      return res.status(400).json(dateError);
     }
 
     // Verificar permisos según el rol
@@ -305,20 +315,10 @@ router.patch("/:id", auth, async (req, res) => {
   try {
     const { date, reason } = req.body;
 
-    // Validar formato de fecha si se proporciona
-    if (date) {
-      const appointmentDate = new Date(date);
-      if (isNaN(appointmentDate.getTime())) {
-        return res.status(400).json({
-          error: "Formato de fecha inválido",
-        });
-      }
-
-      if (appointmentDate < new Date()) {
-        return res.status(400).json({
-          error: "La fecha de la cita debe ser futura",
-        });
-      }
+    // Validar fecha si se proporciona
+    const dateError = validateDate(date);
+    if (dateError) {
+      return res.status(400).json(dateError);
     }
 
     const appt = await pool.query(
@@ -405,6 +405,16 @@ router.patch("/:id", auth, async (req, res) => {
  */
 router.delete("/:id", auth, isAdmin, async (req, res) => {
   try {
+    // Verificar que la cita existe
+    const check = await pool.query(
+      "SELECT id FROM appointments WHERE id = $1",
+      [req.params.id]
+    );
+
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: "Cita no encontrada" });
+    }
+
     await pool.query("DELETE FROM appointments WHERE id = $1", [
       req.params.id,
     ]);
@@ -536,25 +546,23 @@ router.patch("/:id/approve", auth, isAdmin, async (req, res) => {
     if (appt.rows.length === 0)
       return res.status(404).json({ error: "Cita no encontrada" });
 
-    // Usar los cambios solicitados o los proporcionados por el admin
     const appointment = appt.rows[0];
+
+    // Validar que la cita está en estado pending_change
+    if (appointment.status !== "pending_change") {
+      return res.status(400).json({
+        error: "Solo se pueden aprobar citas con cambios pendientes",
+      });
+    }
+
+    // Usar los cambios solicitados o los proporcionados por el admin
     const newDate = date || appointment.requested_date;
     const newReason = reason || appointment.requested_reason;
 
-    // Validar formato de fecha si se proporciona
-    if (newDate) {
-      const appointmentDate = new Date(newDate);
-      if (isNaN(appointmentDate.getTime())) {
-        return res.status(400).json({
-          error: "Formato de fecha inválido",
-        });
-      }
-
-      if (appointmentDate < new Date()) {
-        return res.status(400).json({
-          error: "La fecha de la cita debe ser futura",
-        });
-      }
+    // Validar fecha
+    const dateError = validateDate(newDate);
+    if (dateError) {
+      return res.status(400).json(dateError);
     }
 
     const result = await pool.query(
@@ -613,6 +621,15 @@ router.patch("/:id/reject", auth, isAdmin, async (req, res) => {
 
     if (appt.rows.length === 0)
       return res.status(404).json({ error: "Cita no encontrada" });
+
+    const appointment = appt.rows[0];
+
+    // Validar que la cita está en estado pending_change
+    if (appointment.status !== "pending_change") {
+      return res.status(400).json({
+        error: "Solo se pueden rechazar citas con cambios pendientes",
+      });
+    }
 
     // Rechazar cambios solicitados y restaurar el estado
     const result = await pool.query(
