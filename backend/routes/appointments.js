@@ -22,7 +22,11 @@ function validateDate(date) {
     return { error: "Formato de fecha inválido" };
   }
 
-  if (appointmentDate < new Date()) {
+  // Add a 1-minute buffer to account for timezone and timing issues
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - 1);
+
+  if (appointmentDate < now) {
     return { error: "La fecha de la cita debe ser futura" };
   }
 
@@ -342,8 +346,8 @@ router.patch("/:id", auth, async (req, res) => {
       const solicitud = await pool.query(
         `UPDATE appointments
          SET status = 'pending_change',
-             requested_date = COALESCE($1, requested_date),
-             requested_reason = COALESCE($2, requested_reason)
+             requested_date = $1,
+             requested_reason = $2
          WHERE id = $3
          RETURNING *`,
         [date, reason, req.params.id]
@@ -556,8 +560,8 @@ router.patch("/:id/approve", auth, isAdmin, async (req, res) => {
     }
 
     // Usar los cambios solicitados o los proporcionados por el admin
-    const newDate = date || appointment.requested_date;
-    const newReason = reason || appointment.requested_reason;
+    const newDate = date ?? appointment.requested_date;
+    const newReason = reason ?? appointment.requested_reason;
 
     // Validar fecha
     const dateError = validateDate(newDate);
